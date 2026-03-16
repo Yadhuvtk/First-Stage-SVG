@@ -1,34 +1,80 @@
 #!/usr/bin/env python3
-import argparse, sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from yd_vector.tracer import Params, trace, export_svg
+from __future__ import annotations
 
-def main():
-    parser = argparse.ArgumentParser(description="YD-Vector: bitmap → SVG tracer")
-    parser.add_argument("input")
-    parser.add_argument("output")
-    parser.add_argument("--threshold", type=int,   default=128)
-    parser.add_argument("--turd",      type=int,   default=2)
-    parser.add_argument("--alpha",     type=float, default=1.0)
-    parser.add_argument("--opti",      type=float, default=0.2)
-    parser.add_argument("--scale",     type=float, default=1.0)
-    parser.add_argument("--invert",    action="store_true")
-    parser.add_argument("--fg",        default="#000000")
-    parser.add_argument("--bg",        default="white")
+import argparse
+import os
+import sys
+
+# Allow running the script directly from the repo root structure
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
+from yd_vector.pipeline import TraceOptions, run_trace
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="YD-Vector: bitmap -> SVG tracer"
+    )
+
+    parser.add_argument("input", help="Input raster image path")
+    parser.add_argument("output", help="Output SVG path")
+
+    parser.add_argument(
+        "--threshold",
+        type=int,
+        default=128,
+        help="Binary threshold value (0-255)",
+    )
+    parser.add_argument(
+        "--invert",
+        action="store_true",
+        help="Invert foreground/background before tracing",
+    )
+    parser.add_argument(
+        "--simplify",
+        type=float,
+        default=1.2,
+        help="Contour simplification tolerance",
+    )
+    parser.add_argument(
+        "--min-area",
+        type=float,
+        default=20.0,
+        help="Minimum contour area to keep",
+    )
+    parser.add_argument(
+        "--fill",
+        default="#000000",
+        help="SVG fill color",
+    )
+    parser.add_argument(
+        "--stroke",
+        default="none",
+        help="SVG stroke color",
+    )
+
+    return parser
+
+
+def main() -> None:
+    parser = build_parser()
     args = parser.parse_args()
 
-    params = Params(
+    options = TraceOptions(
+        input_path=args.input,
+        output_path=args.output,
         threshold=args.threshold,
-        turd_size=args.turd,
-        alpha_max=args.alpha,
-        opti_tolerance=args.opti,
-        scale=args.scale,
         invert=args.invert,
+        simplify=args.simplify,
+        min_area=args.min_area,
+        fill=args.fill,
+        stroke=args.stroke,
     )
 
     print(f"[yd-vector] Tracing: {args.input}")
-    paths, w, h = trace(args.input, params)
-    export_svg(paths, w, h, args.output, foreground=args.fg, background=args.bg)
+    run_trace(options)
+    print(f"[yd-vector] SVG written to: {args.output}")
+
 
 if __name__ == "__main__":
     main()
