@@ -24,13 +24,13 @@ def run_trace(options: TraceOptions) -> TraceResult:
 
     contours = extract_contours(binary, min_area=options.min_area)
     contours = simplify_contours(contours, tolerance=options.simplify_tolerance)
-    contours = prepare_paths(contours)
+    fitted_paths = prepare_paths(contours)
 
     svg_path = write_svg(
         output_path=options.output_path,
         width=width,
         height=height,
-        contours=contours,
+        paths=fitted_paths,
         fill=options.fill,
         stroke=options.stroke,
     )
@@ -45,6 +45,7 @@ def run_trace(options: TraceOptions) -> TraceResult:
         width=width,
         height=height,
         contours=contours,
+        fitted_paths=fitted_paths,
         svg_path=svg_path,
         debug_mask_path=debug_mask_path,
     )
