@@ -1,12 +1,3 @@
-__all__ = [
-    "cli",
-    "config",
-    "pipeline",
-    "preprocess",
-    "contours",
-    "simplify",
-    "fit",
-    "svg_writer",
-    "models",
-    "utils",
-]
+from .tracer import Params, trace, export_svg, load_image, to_grayscale, binarize
+
+__all__ = ["Params", "trace", "export_svg", "load_image", "to_grayscale", "binarize"]
