@@ -9,6 +9,13 @@ import cv2
 from typing import List, Tuple, Optional
 from dataclasses import dataclass
 import math
+from pathlib import Path
+
+try:
+    import yaml as _yaml
+    _HAS_YAML = True
+except ImportError:
+    _HAS_YAML = False
 
 
 @dataclass
@@ -20,6 +27,34 @@ class Params:
     opti_tolerance: float = 0.2
     scale: float = 1.0
     invert: bool = False
+    corner_arc_radius_sharp: float = 0.42  # arc radius for sharp corners (dot < 0.5)
+    corner_arc_radius_soft: float = 0.92   # arc radius for soft  corners (dot 0.5-0.85)
+
+    @classmethod
+    def from_yaml(cls, path=None) -> "Params":
+        """Load params from configs/default.yaml, falling back to dataclass defaults."""
+        if not _HAS_YAML:
+            return cls()
+        cfg_path = (Path(path) if path
+                    else Path(__file__).parent.parent / "configs" / "default.yaml")
+        if not cfg_path.exists():
+            return cls()
+        with cfg_path.open("r", encoding="utf-8") as f:
+            data = _yaml.safe_load(f) or {}
+        pre = data.get("preprocessing", {})
+        pip = data.get("pipeline", {})
+        out = data.get("output", {})
+        return cls(
+            threshold=pre.get("threshold", 128),
+            turd_size=pip.get("turdsize", 2),
+            alpha_max=pip.get("alphamax", 1.0),
+            opti_curve=bool(pip.get("optcurve", True)),
+            opti_tolerance=pip.get("opttolerance", 0.2),
+            scale=out.get("scale", 1.0),
+            invert=bool(pre.get("invert", False)),
+            corner_arc_radius_sharp=float(pip.get("corner_arc_radius_sharp", 0.42)),
+            corner_arc_radius_soft=float(pip.get("corner_arc_radius_soft", 0.92)),
+        )
 
 
 # ─── Image loading ────────────────────────────────────────────────────────────
@@ -62,7 +97,8 @@ def extract_contours_cv(binary: np.ndarray):
 
 # ─── Smooth Bezier path builder ───────────────────────────────────────────────
 
-def smooth_path(pts: np.ndarray, alpha: float = 1.0) -> str:
+def smooth_path(pts: np.ndarray, alpha: float = 1.0,
+                r_sharp: float = 0.42, r_soft: float = 0.92) -> str:
     """
     Build a smooth SVG cubic Bezier path from a polygon.
     Uses the Catmull-Rom → Bezier conversion with tension control.
@@ -105,7 +141,29 @@ def smooth_path(pts: np.ndarray, alpha: float = 1.0) -> str:
         d2 = abs(dy*(cp2x - ex)    - dx*(cp2y - ey))    / seg_len
 
         if d1 < 0.5 and d2 < 0.5:
-            cmds.append(f"L {ex:.3f} {ey:.3f}")
+            # Micro-arc corner transition instead of a hard L
+            in_dx  = p2[0] - p1[0];  in_dy  = p2[1] - p1[1]
+            out_dx = p3[0] - p2[0];  out_dy = p3[1] - p2[1]
+            in_mag  = math.sqrt(in_dx*in_dx   + in_dy*in_dy)
+            out_mag = math.sqrt(out_dx*out_dx + out_dy*out_dy)
+            if in_mag < 1e-6 or out_mag < 1e-6:
+                cmds.append(f"L {ex:.3f} {ey:.3f}")
+            else:
+                ux, uy = in_dx / in_mag,  in_dy / in_mag
+                vx, vy = out_dx / out_mag, out_dy / out_mag
+                dot   = ux*vx + uy*vy
+                cross = ux*vy - uy*vx
+                if dot >= 0.85:            # nearly straight — keep plain L
+                    cmds.append(f"L {ex:.3f} {ey:.3f}")
+                else:
+                    rx = ry = r_sharp if dot < 0.5 else r_soft
+                    sweep  = 1 if cross > 0 else 0
+                    prex   = p2[0] - 0.8 * ux;  prey  = p2[1] - 0.8 * uy
+                    postx  = p2[0] + 0.8 * vx;  posty = p2[1] + 0.8 * vy
+                    cmds.append(f"L {prex:.3f} {prey:.3f}")
+                    cmds.append(
+                        f"A {rx} {ry} 0 0 {sweep} {postx:.3f} {posty:.3f}"
+                    )
         else:
             cmds.append(
                 f"C {cp1x:.3f} {cp1y:.3f} "
@@ -190,7 +248,9 @@ def trace(input_path: str, params: Optional[Params] = None) -> Tuple[List[dict],
             pts = pts[::-1]
 
         # Build smooth Bezier path
-        d = smooth_path(pts, alpha=params.alpha_max)
+        d = smooth_path(pts, alpha=params.alpha_max,
+                        r_sharp=params.corner_arc_radius_sharp,
+                        r_soft=params.corner_arc_radius_soft)
         if d:
             paths.append({'d': d, 'is_hole': is_hole, 'area': area})
 

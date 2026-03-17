@@ -20,6 +20,7 @@ pipeline:
   opttolerance: 0.2     # curve-merge tolerance in pixels
   optcurve: true        # enable optiCurve merging pass (Stage 7)
   turnpolicy: minority  # minority|majority|right|black|white
+  tension: 0.55         # bezier control-arm scale factor (higher = smoother, fuller curves)
   # yd_vector bezier-fitting parameters:
   corner_threshold: 0.85       # dot-product cosine cutoff for corner detection
                                # (1.0=no corners, 0.0=90° only, -1.0=every vertex)

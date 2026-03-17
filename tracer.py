@@ -36,6 +36,56 @@ import sys
 import cv2
 import numpy as np
 
+from dataclasses import dataclass
+from pathlib import Path
+
+try:
+    import yaml as _yaml
+    _HAS_YAML = True
+except ImportError:
+    _HAS_YAML = False
+
+_DEFAULT_YAML = Path(__file__).parent / "configs" / "default.yaml"
+
+
+@dataclass
+class Params:
+    """Potrace pipeline parameters, loadable from configs/default.yaml.
+
+    Use ``Params.from_yaml()`` to load defaults from the config file, or
+    construct directly:  ``Params(tension=0.55, alphamax=1.0, ...)``.
+    """
+    turdsize: int = 2
+    alphamax: float = 1.0
+    opttolerance: float = 0.2
+    optcurve: bool = True
+    turnpolicy: str = "minority"
+    tension: float = 0.55               # bezier arm scale (higher = fuller curves)
+    corner_arc_radius_sharp: float = 0.42  # arc radius for sharp corners (dot < 0.5)
+    corner_arc_radius_soft: float = 0.92   # arc radius for soft  corners (dot 0.5-0.85)
+
+    @classmethod
+    def from_yaml(cls, path=None) -> "Params":
+        """Load pipeline params from a YAML file (default: configs/default.yaml)."""
+        if not _HAS_YAML:
+            return cls()
+        cfg_path = Path(path) if path else _DEFAULT_YAML
+        if not cfg_path.exists():
+            return cls()
+        with cfg_path.open("r", encoding="utf-8") as f:
+            data = _yaml.safe_load(f) or {}
+        p = data.get("pipeline", {})
+        return cls(
+            turdsize=p.get("turdsize", 2),
+            alphamax=p.get("alphamax", 1.0),
+            opttolerance=p.get("opttolerance", 0.2),
+            optcurve=bool(p.get("optcurve", True)),
+            turnpolicy=str(p.get("turnpolicy", "minority")),
+            tension=float(p.get("tension", 0.55)),
+            corner_arc_radius_sharp=float(p.get("corner_arc_radius_sharp", 0.42)),
+            corner_arc_radius_soft=float(p.get("corner_arc_radius_soft", 0.92)),
+        )
+
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -704,7 +754,7 @@ def reverse(path):
 # Stage 6: smooth  (corner detection + Bezier control-point assignment)
 # ---------------------------------------------------------------------------
 
-def smooth(path, alphamax):
+def smooth(path, alphamax, tension=0.55):
     """
     For each vertex of the optimal polygon, decide CURVE or CORNER.
 
@@ -750,9 +800,10 @@ def smooth(path, alphamax):
             curve.c[3*j+1]     = curve.vertex[j]
             curve.c[3*j+2]     = p4
         else:
-            alpha = max(0.55, min(1.0, alpha))
-            p2 = _interval(0.5 + 0.5*alpha, curve.vertex[i], curve.vertex[j])
-            p3 = _interval(0.5 + 0.5*alpha, curve.vertex[k], curve.vertex[j])
+            _t = min(alpha / 1.333, 1.0) * tension  # bezier arm length
+            alpha = max(0.55, min(1.0, alpha))       # stored alpha for optiCurve pass
+            p2 = _interval(0.5 + _t, curve.vertex[i], curve.vertex[j])
+            p3 = _interval(0.5 + _t, curve.vertex[k], curve.vertex[j])
             curve.tag[j]   = "CURVE"
             curve.c[3*j+0] = p2
             curve.c[3*j+1] = p3
@@ -974,10 +1025,76 @@ def opti_curve(path, opttolerance):
 
 
 # ---------------------------------------------------------------------------
+# Corner micro-arc helper
+# ---------------------------------------------------------------------------
+
+def _corner_arc_cmd(prev, corner, next_a, size, r_sharp, r_soft):
+    """Return SVG path fragment for a CORNER segment with a micro-arc transition.
+
+    Replaces the hard ``L corner L next_a`` with::
+
+        L (corner - offset*in_unit)              # approach entry
+        A r r 0 0 sweep (corner + offset*out_unit)  # arc around corner
+        L next_a                                    # continue to anchor
+
+    Falls back to plain ``L corner L next_a`` for degenerate or nearly-straight
+    junctions (dot product >= 0.85).
+
+    Args:
+        prev:    Point at end of previous segment (incoming).
+        corner:  The sharp corner vertex (c[i*3+1]).
+        next_a:  Segment end-anchor after the corner (c[i*3+2]).
+        size:    Output scale factor (applied to all coordinates and radii).
+        r_sharp: Arc radius for sharp corners (dot product < 0.5).
+        r_soft:  Arc radius for soft  corners (dot product 0.5 <= dot < 0.85).
+    """
+    def f(v): return f"{v * size:.3f}"
+
+    in_dx  = corner.x - prev.x
+    in_dy  = corner.y - prev.y
+    in_mag = math.hypot(in_dx, in_dy)
+
+    out_dx  = next_a.x - corner.x
+    out_dy  = next_a.y - corner.y
+    out_mag = math.hypot(out_dx, out_dy)
+
+    if in_mag < 0.5 or out_mag < 0.5:
+        # Degenerate corner — fall back to straight lines
+        return (f"L {f(corner.x)} {f(corner.y)} "
+                f"L {f(next_a.x)} {f(next_a.y)} ")
+
+    ux, uy = in_dx / in_mag, in_dy / in_mag      # incoming unit vector
+    vx, vy = out_dx / out_mag, out_dy / out_mag  # outgoing unit vector
+
+    dot   = ux * vx + uy * vy
+    cross = ux * vy - uy * vx   # sign determines arc sweep direction
+
+    if dot >= 0.85:
+        # Nearly straight — skip the arc
+        return (f"L {f(corner.x)} {f(corner.y)} "
+                f"L {f(next_a.x)} {f(next_a.y)} ")
+
+    r      = r_sharp if dot < 0.5 else r_soft
+    offset = min(0.8, in_mag * 0.45, out_mag * 0.45)
+
+    ex = corner.x - offset * ux   # entry point (0.8 px before corner)
+    ey = corner.y - offset * uy
+    ax = corner.x + offset * vx   # exit  point (0.8 px after  corner)
+    ay = corner.y + offset * vy
+
+    sweep = 1 if cross > 0 else 0
+
+    return (f"L {f(ex)} {f(ey)} "
+            f"A {f(r)} {f(r)} 0 0 {sweep} {f(ax)} {f(ay)} "
+            f"L {f(next_a.x)} {f(next_a.y)} ")
+
+
+# ---------------------------------------------------------------------------
 # Stage 8: getSVG  -- SVG serialisation
 # ---------------------------------------------------------------------------
 
-def get_svg(pathlist, width, height, size=1.0, fill="#000000"):
+def get_svg(pathlist, width, height, size=1.0, fill="#000000",
+            corner_arc_radius_sharp=0.42, corner_arc_radius_soft=0.92):
     """
     Serialise all paths to SVG.
     Translated from potrace.js getSVG(), with fill-rule="evenodd".
@@ -1001,8 +1118,12 @@ def get_svg(pathlist, width, height, size=1.0, fill="#000000"):
                       f"{fmt(curve.c[i*3+1].x)} {fmt(curve.c[i*3+1].y)},"
                       f"{fmt(curve.c[i*3+2].x)} {fmt(curve.c[i*3+2].y)} ")
             elif curve.tag[i] == "CORNER":
-                d += (f"L {fmt(curve.c[i*3+1].x)} {fmt(curve.c[i*3+1].y)} "
-                      f"{fmt(curve.c[i*3+2].x)} {fmt(curve.c[i*3+2].y)} ")
+                d += _corner_arc_cmd(
+                    curve.c[((i - 1 + n) % n) * 3 + 2],
+                    curve.c[i * 3 + 1],
+                    curve.c[i * 3 + 2],
+                    size, corner_arc_radius_sharp, corner_arc_radius_soft,
+                )
         return d
 
     w = int(width * size)
@@ -1043,13 +1164,19 @@ class PurePythonTracer:
     """
 
     def __init__(self, turdsize=2, alphamax=1.0, opttolerance=0.2,
-                 optcurve=True, turnpolicy="minority"):
+                 optcurve=True, turnpolicy="minority",
+                 tension=0.55,
+                 corner_arc_radius_sharp=0.42,
+                 corner_arc_radius_soft=0.92):
         self.info = dict(
             turdsize=turdsize,
             alphamax=alphamax,
             opttolerance=opttolerance,
             optcurve=optcurve,
             turnpolicy=turnpolicy,
+            tension=tension,
+            corner_arc_radius_sharp=corner_arc_radius_sharp,
+            corner_arc_radius_soft=corner_arc_radius_soft,
         )
 
     def trace(self, binary_arr: np.ndarray,
@@ -1139,7 +1266,9 @@ class PurePythonTracer:
                                       "merged_segments": path.curve.n}))
 
         # ── Stage 8: SVG serialisation ───────────────────────────────────────
-        return get_svg(pathlist, w, h, size=size, fill=fill)
+        return get_svg(pathlist, w, h, size=size, fill=fill,
+                       corner_arc_radius_sharp=info.get("corner_arc_radius_sharp", 0.42),
+                       corner_arc_radius_soft=info.get("corner_arc_radius_soft", 0.92))
 
     def trace_layers(
         self,
@@ -1183,7 +1312,7 @@ class PurePythonTracer:
                 adjust_vertices(path)
                 if path.sign == "-":
                     reverse(path)
-                smooth(path, info["alphamax"])
+                smooth(path, info["alphamax"], info.get("tension", 0.55))
                 if info["optcurve"]:
                     opti_curve(path, info["opttolerance"])
             layer_parts.append((color_hex, pathlist))
@@ -1192,7 +1321,9 @@ class PurePythonTracer:
             return '<svg xmlns="http://www.w3.org/2000/svg" ' \
                    f'width="{w}" height="{h}"></svg>'
 
-        return build_multicolor_svg(layer_parts, w, h, size=size)
+        return build_multicolor_svg(layer_parts, w, h, size=size,
+                                    corner_arc_radius_sharp=info.get("corner_arc_radius_sharp", 0.42),
+                                    corner_arc_radius_soft=info.get("corner_arc_radius_soft", 0.92))
 
     def trace_color_layers(self, img_bgr: np.ndarray, n_colors: int = 8,
                            size: float = 1.0) -> str:
@@ -1257,21 +1388,24 @@ class PurePythonTracer:
                 adjust_vertices(path)
                 if path.sign == "-":
                     reverse(path)
-                smooth(path, info["alphamax"])
+                smooth(path, info["alphamax"], info.get("tension", 0.55))
                 if info["optcurve"]:
                     opti_curve(path, info["opttolerance"])
 
             layer_parts.append((hex_color, pathlist))
 
         # ---- Step 3: Assemble multi-layer SVG ----
-        return build_multicolor_svg(layer_parts, w, h, size=size)
+        return build_multicolor_svg(layer_parts, w, h, size=size,
+                                    corner_arc_radius_sharp=info.get("corner_arc_radius_sharp", 0.42),
+                                    corner_arc_radius_soft=info.get("corner_arc_radius_soft", 0.92))
 
 
 # ---------------------------------------------------------------------------
 # Multi-color SVG builder
 # ---------------------------------------------------------------------------
 
-def _path_d_str(curve, size):
+def _path_d_str(curve, size,
+                corner_arc_radius_sharp=0.42, corner_arc_radius_soft=0.92):
     """Serialize one Curve object to an SVG path 'd' substring."""
     def fmt(v):
         return f"{v * size:.3f}"
@@ -1283,12 +1417,17 @@ def _path_d_str(curve, size):
                   f"{fmt(curve.c[i*3+1].x)} {fmt(curve.c[i*3+1].y)},"
                   f"{fmt(curve.c[i*3+2].x)} {fmt(curve.c[i*3+2].y)} ")
         elif curve.tag[i] == "CORNER":
-            d += (f"L {fmt(curve.c[i*3+1].x)} {fmt(curve.c[i*3+1].y)} "
-                  f"{fmt(curve.c[i*3+2].x)} {fmt(curve.c[i*3+2].y)} ")
+            d += _corner_arc_cmd(
+                curve.c[((i - 1 + n) % n) * 3 + 2],
+                curve.c[i * 3 + 1],
+                curve.c[i * 3 + 2],
+                size, corner_arc_radius_sharp, corner_arc_radius_soft,
+            )
     return d
 
 
-def build_multicolor_svg(layer_parts, width, height, size=1.0):
+def build_multicolor_svg(layer_parts, width, height, size=1.0,
+                         corner_arc_radius_sharp=0.42, corner_arc_radius_soft=0.92):
     """
     Build a layered SVG with one <path> per color cluster.
     Each path uses fill-rule=evenodd so holes punch through correctly.
@@ -1304,7 +1443,9 @@ def build_multicolor_svg(layer_parts, width, height, size=1.0):
     ]
     for hex_color, pathlist in layer_parts:
         # Combine all subpath 'd' strings for this color into one <path>
-        d_parts = [_path_d_str(p.curve, size) for p in pathlist]
+        d_parts = [_path_d_str(p.curve, size,
+                               corner_arc_radius_sharp, corner_arc_radius_soft)
+                   for p in pathlist]
         d = " ".join(d_parts)
         lines.append(
             f'  <path fill="{hex_color}" stroke="none" '

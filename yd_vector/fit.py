@@ -1,3 +1,6 @@
+# DEPRECATED: This module (straight-line-only fitting) is superseded by
+# tracer.py (PurePythonTracer) which runs the full Potrace pipeline.
+# Retained for backward-compatibility only. Do not add new code here.
 from __future__ import annotations
 
 import math
