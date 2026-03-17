@@ -7,25 +7,28 @@ sourced from the open-source JavaScript port by kilobtye:
 
 All math is translated verbatim from potrace.js.
 NO pypotrace, NO C-bindings, NO Douglas-Peucker (approxPolyDP).
-Only cv2.imread / cv2.threshold / cv2.findContours are used for I/O.
+OpenCV (cv2) is used ONLY for: imread, threshold, bitwise_not, morphologyEx,
+kmeans. All tracing geometry is computed in pure Python.
 
-Pipeline (matching potrace.js exactly):
-  1. bmToPathlist   — pixel-walk contour decomposition
-  2. calcSums       — prefix-sum tables for fast quadratic penalty
-  3. calcLon        — longest straight-run table
-  4. bestPolygon    — DP shortest-polygon via penalty3
-  5. adjustVertices — least-squares vertex optimisation (quadform)
-  6. smooth         — corner detection + Bezier control-point assignment
-  7. optiCurve      — optional curve merging optimisation
-  8. getSVG         — M / L / C SVG serialisation with fill-rule=evenodd
+Pipeline (matching potrace.js / Selinger 2003 exactly):
+  1. bm_to_pathlist  — internal Bitmap pixel-walk contour decomposition
+  2. calc_sums       — prefix-sum tables for O(1) quadratic penalty
+  3. calc_lon        — longest monotone-run table per vertex
+  4. best_polygon    — DP shortest-polygon via penalty3
+  5. adjust_vertices — least-squares vertex optimisation (quadratic forms)
+  6. smooth          — corner detection (alpha penalty) + Bezier CP assignment
+  7. opti_curve      — optional curve merging optimisation
+  8. get_svg         — M / L / C / Z SVG serialisation, fill-rule=evenodd
 
 Usage:
-  python tracer.py input.png output.svg [--turdsize 2] [--alphamax 1]
-                   [--opttolerance 0.2] [--no-optcurve] [--threshold 128]
-                   [--invert] [--fill #000000]
+  python tracer.py input.png output.svg
+  python tracer.py input.png output.svg --otsu --invert --close 5
+  python tracer.py input.png output.svg --debug
+  python tracer.py input.png output.svg --colors 8   # multi-color mode
 """
 
 import argparse
+import json
 import math
 import os
 import sys
@@ -1049,40 +1052,93 @@ class PurePythonTracer:
             turnpolicy=turnpolicy,
         )
 
-    def trace(self, binary_arr: np.ndarray, fill="#000000", size=1.0) -> str:
+    def trace(self, binary_arr: np.ndarray,
+              fill: str = "#000000",
+              size: float = 1.0,
+              debug: bool = False) -> str:
         """
-        Run the full pipeline.
+        Run the full Potrace-style pipeline.
+
+        Stage flow:
+          bitmap → bm_to_pathlist → calc_sums → calc_lon → best_polygon
+          → adjust_vertices → smooth → [opti_curve] → get_svg
 
         Parameters
         ----------
-        binary_arr : uint8 numpy array (H x W), foreground pixels = 255
-        fill       : SVG fill colour
+        binary_arr : uint8 (H×W) array; foreground pixels == 255
+        fill       : SVG fill color hex string
         size       : output scale factor
-
+        debug      : if True, print JSON lines to stdout with per-path
+                     intermediate state (pathlist, polygon, vertices, tags)
         Returns
         -------
-        str : complete SVG document
+        str : complete SVG document string
         """
         h, w = binary_arr.shape[:2]
 
-        # Build Bitmap (1 = foreground / dark pixel)
+        # ── Stage 1: Path decomposition ─────────────────────────────────────
+        # Build internal Bitmap (1=foreground). NOT using cv2.findContours.
         flat = (binary_arr.flatten() > 127).astype(int).tolist()
         bm = Bitmap(w, h, flat)
-
         info = self.info
         pathlist = bm_to_pathlist(bm, info)
 
-        for path in pathlist:
+        if debug:
+            print(json.dumps({"stage": "bm_to_pathlist",
+                              "num_paths": len(pathlist),
+                              "paths": [{"len": p.len, "sign": p.sign,
+                                         "area": p.area,
+                                         "bbox": [p.minX, p.minY, p.maxX, p.maxY]}
+                                        for p in pathlist]}))
+
+        for idx, path in enumerate(pathlist):
+            # ── Stage 2: Prefix-sum tables ──────────────────────────────────
             calc_sums(path)
+
+            # ── Stage 3: Longest-run table ──────────────────────────────────
             calc_lon(path)
+
+            # ── Stage 4: Optimal shortest polygon (DP) ──────────────────────
             best_polygon(path)
+
+            if debug:
+                print(json.dumps({"stage": "best_polygon", "path_idx": idx,
+                                  "polygon_vertices": path.m,
+                                  "polygon": [{"x": path.pt[path.po[i]].x,
+                                               "y": path.pt[path.po[i]].y}
+                                              for i in range(path.m)]}))
+
+            # ── Stage 5: Sub-pixel vertex adjustment (quadratic forms) ──────
             adjust_vertices(path)
+
+            if debug:
+                print(json.dumps({"stage": "adjust_vertices", "path_idx": idx,
+                                  "vertices": [{"x": round(v.x, 3),
+                                                "y": round(v.y, 3)}
+                                               for v in path.curve.vertex]}))
+
             if path.sign == "-":
                 reverse(path)
+
+            # ── Stage 6: Corner detection + Bezier control-point assignment ─
             smooth(path, info["alphamax"])
+
+            if debug:
+                tags = [(path.curve.tag[i], round(path.curve.alpha[i], 3))
+                        for i in range(path.curve.n)]
+                print(json.dumps({"stage": "smooth", "path_idx": idx,
+                                  "segments": [{"tag": t, "alpha": a}
+                                               for t, a in tags]}))
+
+            # ── Stage 7: Optional curve merging (optiCurve) ─────────────────
             if info["optcurve"]:
                 opti_curve(path, info["opttolerance"])
 
+                if debug:
+                    print(json.dumps({"stage": "opti_curve", "path_idx": idx,
+                                      "merged_segments": path.curve.n}))
+
+        # ── Stage 8: SVG serialisation ───────────────────────────────────────
         return get_svg(pathlist, w, h, size=size, fill=fill)
 
     def trace_color_layers(self, img_bgr: np.ndarray, n_colors: int = 8,
@@ -1237,12 +1293,21 @@ Examples:
     ap.add_argument("--invert",       action="store_true",       help="Invert bitmap (trace dark shapes)")
     ap.add_argument("--turnpolicy",   default="minority",        help="Turn ambiguity policy (default minority)")
     ap.add_argument("--fill",         default="#000000",         help='SVG fill colour for binary mode (default "#000000")')
+    ap.add_argument("--bg",           default=None,              help="Optional background rect color (transparent if omitted)")
     ap.add_argument("--size",         type=float, default=1.0,   help="Output scale factor (default 1.0)")
+    ap.add_argument("--scale",        type=float, default=None,  help="Alias for --size")
     ap.add_argument("--colors",       type=int,   default=0,
                     help="Number of colors for multi-color mode (e.g. 8). "
                          "When set, ignores --threshold/--invert/--fill and "
                          "runs k-means quantization + per-layer tracing.")
+    ap.add_argument("--debug",        action="store_true",
+                    help="Dump intermediate pipeline state (JSON lines) to stdout: "
+                         "pathlist, polygon vertices, adjusted vertices, curve tags per segment.")
     args = ap.parse_args()
+
+    # --scale is an alias for --size
+    if args.scale is not None:
+        args.size = args.scale
 
     if not os.path.isfile(args.input):
         print(f"[tracer] ERROR: not found: {args.input}", file=sys.stderr)
@@ -1298,7 +1363,14 @@ Examples:
         print(f"[tracer] Binary mode: {gray.shape[1]}×{gray.shape[0]} px "
               f"(alphamax={args.alphamax}, opttol={args.opttolerance}, "
               f"turdsize={args.turdsize}, optcurve={not args.no_optcurve})")
-        svg = tracer.trace(binary, fill=args.fill, size=args.size)
+        if args.debug:
+            print(f"[tracer] Debug mode ON — printing JSON intermediate state to stdout")
+        svg = tracer.trace(binary, fill=args.fill, size=args.size, debug=args.debug)
+
+    # Optional background rect injection
+    if getattr(args, 'bg', None):
+        bg_rect = f'  <rect width="100%" height="100%" fill="{args.bg}"/>\n'
+        svg = svg.replace('  <!-- tracer.py', bg_rect + '  <!-- tracer.py')
 
     outdir = os.path.dirname(args.output)
     if outdir:

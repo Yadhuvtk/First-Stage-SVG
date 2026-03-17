@@ -1,0 +1,27 @@
+# Potrace-style pipeline default parameters
+# Referenced by tracer.py and scripts/trace.py
+#
+# Stage mapping:
+#  threshold  -> binary binarization cutoff (Stage 0: preprocessing)
+#  turdsize   -> min path area kept         (Stage 1: bm_to_pathlist)
+#  alphamax   -> corner sharpness threshold (Stage 6: smooth)
+#  opttol     -> curve-merge tolerance      (Stage 7: opti_curve)
+#  optcurve   -> enable/disable Stage 7
+
+preprocessing:
+  threshold: 128        # 0-255; ignored when --otsu is used
+  otsu: false           # OTSU auto-threshold (recommended for photos)
+  invert: false         # flip foreground/background
+  close: 0              # morphological close kernel size in pixels
+
+pipeline:
+  turdsize: 2           # suppress speckles <= this area (px^2)
+  alphamax: 1.0         # corner threshold: 0=all corners, 4=all curves
+  opttolerance: 0.2     # curve-merge tolerance in pixels
+  optcurve: true        # enable optiCurve merging pass (Stage 7)
+  turnpolicy: minority  # minority|majority|right|black|white
+
+output:
+  fill: "#000000"       # foreground fill color
+  bg: null              # background rect color (null = transparent SVG)
+  scale: 1.0            # output scale factor

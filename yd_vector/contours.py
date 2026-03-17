@@ -1,4 +1,8 @@
+# LEGACY: This module uses cv2.findContours for contour extraction.
+# The main tracer (tracer.py / PurePythonTracer) uses its own internal
+# Bitmap pixel-walk (bm_to_pathlist) and does NOT depend on this module.
 from __future__ import annotations
+
 
 from typing import List
 
