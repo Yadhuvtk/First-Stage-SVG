@@ -3,8 +3,24 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List
 
-from yd_vector.models import FittedPath, PathSegment
+from yd_vector.models import ContourData, FittedPath, PathSegment
 from yd_vector.utils import ensure_parent_dir
+
+
+def _contour_to_path_d(contour: ContourData) -> str:
+    """Convert a ContourData directly to an SVG path data string (L commands only).
+
+    This is a legacy helper retained for backward-compatible tests.
+    For Bézier-quality output use yd_vector.bezier.contour_to_svg_path() instead.
+    """
+    points = contour.points
+    if not points:
+        return ""
+    commands = [f"M {points[0][0]:.2f} {points[0][1]:.2f}"]
+    for pt in points[1:]:
+        commands.append(f"L {pt[0]:.2f} {pt[1]:.2f}")
+    commands.append("Z")
+    return " ".join(commands)
 
 
 def _segments_to_path_d(path: FittedPath) -> str:

@@ -1,5 +1,5 @@
 """
-tracer.py — Pure Python Potrace Transpile
+tracer.py -- Pure Python Potrace Transpile
 ==========================================
 A faithful Python translation of Peter Selinger's Potrace algorithm,
 sourced from the open-source JavaScript port by kilobtye:
@@ -11,14 +11,14 @@ OpenCV (cv2) is used ONLY for: imread, threshold, bitwise_not, morphologyEx,
 kmeans. All tracing geometry is computed in pure Python.
 
 Pipeline (matching potrace.js / Selinger 2003 exactly):
-  1. bm_to_pathlist  — internal Bitmap pixel-walk contour decomposition
-  2. calc_sums       — prefix-sum tables for O(1) quadratic penalty
-  3. calc_lon        — longest monotone-run table per vertex
-  4. best_polygon    — DP shortest-polygon via penalty3
-  5. adjust_vertices — least-squares vertex optimisation (quadratic forms)
-  6. smooth          — corner detection (alpha penalty) + Bezier CP assignment
-  7. opti_curve      — optional curve merging optimisation
-  8. get_svg         — M / L / C / Z SVG serialisation, fill-rule=evenodd
+  1. bm_to_pathlist  -- internal Bitmap pixel-walk contour decomposition
+  2. calc_sums       -- prefix-sum tables for O(1) quadratic penalty
+  3. calc_lon        -- longest monotone-run table per vertex
+  4. best_polygon    -- DP shortest-polygon via penalty3
+  5. adjust_vertices -- least-squares vertex optimisation (quadratic forms)
+  6. smooth          -- corner detection (alpha penalty) + Bezier CP assignment
+  7. opti_curve      -- optional curve merging optimisation
+  8. get_svg         -- M / L / C / Z SVG serialisation, fill-rule=evenodd
 
 Usage:
   python tracer.py input.png output.svg
@@ -540,7 +540,7 @@ def adjust_vertices(path):
     Find the optimal sub-pixel vertex positions using least-squares quadratic
     forms (Selinger §2.4 / potrace.js adjustVertices).
 
-    For each polygon edge, a 3×3 quadratic form Q is built from the
+    For each polygon edge, a 3x3 quadratic form Q is built from the
     best-fit line direction through that edge's pixels.  Pairs of adjacent
     Qs are combined and the minimum of their sum gives the optimal vertex.
     """
@@ -560,7 +560,7 @@ def adjust_vertices(path):
         """
         Compute centroid and principal direction of the pixel segment i..j.
 
-        Uses the eigendecomposition of the 2×2 covariance matrix:
+        Uses the eigendecomposition of the 2x2 covariance matrix:
             [[a, b], [b, c]]
         The larger eigenvalue's eigenvector gives the best-fit direction.
         This is the standard PCA approach for line fitting.
@@ -619,7 +619,7 @@ def adjust_vertices(path):
         else:
             v = [dir_[i].y, -dir_[i].x,
                  -dir_[i].y*ctr[i].y - (-dir_[i].x)*ctr[i].x]
-            # Rank-1 outer product / d  → 3×3 quadratic form matrix
+            # Rank-1 outer product / d  → 3x3 quadratic form matrix
             for l in range(3):
                 for k in range(3):
                     q[i].data[l*3+k] = v[l]*v[k] / d
@@ -710,9 +710,9 @@ def smooth(path, alphamax):
 
     Alpha penalty (Selinger §2.5):
         At vertex j, with neighbours i and k:
-          denom = ddenom(vertex[i], vertex[k])  — proportional to |i→k| in
+          denom = ddenom(vertex[i], vertex[k])  -- proportional to |i→k| in
                   the direction orthogonal to the chord
-          dd    = |dpara(i, j, k)| / denom      — cross-ratio / 'curviness'
+          dd    = |dpara(i, j, k)| / denom      -- cross-ratio / 'curviness'
           alpha = (dd > 1) ? 1 - 1/dd : 0,  then scaled by 4/3
 
         If alpha >= alphamax  → CORNER  (sharp; use L command)
@@ -722,7 +722,7 @@ def smooth(path, alphamax):
         p2 = midpoint of vertex[k] and vertex[j]   (end-anchor of segment)
         p3 = interval(0.5 + 0.5*alpha, vertex[i], vertex[j])  (cp1 outgoing)
         p4 = interval(0.5 + 0.5*alpha, vertex[k], vertex[j])  (cp2 incoming)
-    The factor (0.5 + 0.5*alpha) scales the control arms — larger alpha =
+    The factor (0.5 + 0.5*alpha) scales the control arms -- larger alpha =
     arms pulled closer to the polygon vertex = tighter curve.
     """
     m     = path.curve.n
@@ -765,7 +765,7 @@ def smooth(path, alphamax):
 
 
 # ---------------------------------------------------------------------------
-# Stage 7: optiCurve  (curve-merging optimisation — optional)
+# Stage 7: optiCurve  (curve-merging optimisation -- optional)
 # ---------------------------------------------------------------------------
 
 def opti_curve(path, opttolerance):
@@ -974,7 +974,7 @@ def opti_curve(path, opttolerance):
 
 
 # ---------------------------------------------------------------------------
-# Stage 8: getSVG  — SVG serialisation
+# Stage 8: getSVG  -- SVG serialisation
 # ---------------------------------------------------------------------------
 
 def get_svg(pathlist, width, height, size=1.0, fill="#000000"):
@@ -983,10 +983,10 @@ def get_svg(pathlist, width, height, size=1.0, fill="#000000"):
     Translated from potrace.js getSVG(), with fill-rule="evenodd".
 
     SVG commands used:
-        M x y           — MoveTo (start of subpath)
-        C x1 y1,x2 y2,x y — Cubic Bezier (CURVE segments)
-        L x1 y1 x2 y2   — LineTo pair (CORNER segments: line + short end)
-        Z               — ClosePath (implicit in Potrace-js omission, we add it)
+        M x y           -- MoveTo (start of subpath)
+        C x1 y1,x2 y2,x y -- Cubic Bezier (CURVE segments)
+        L x1 y1 x2 y2   -- LineTo pair (CORNER segments: line + short end)
+        Z               -- ClosePath (implicit in Potrace-js omission, we add it)
     """
     def fmt(v):
         return f"{v * size:.3f}"
@@ -1035,11 +1035,11 @@ class PurePythonTracer:
 
     Parameters
     ----------
-    turdsize     : int   — suppress speckles smaller than this area (px²)
-    alphamax     : float — corner threshold; lower = more corners kept
-    opttolerance : float — curve-merge tolerance (pixels)
-    optcurve     : bool  — run optiCurve pass (recommended)
-    turnpolicy   : str   — how to resolve ambiguous turns ("minority" default)
+    turdsize     : int   -- suppress speckles smaller than this area (px²)
+    alphamax     : float -- corner threshold; lower = more corners kept
+    opttolerance : float -- curve-merge tolerance (pixels)
+    optcurve     : bool  -- run optiCurve pass (recommended)
+    turnpolicy   : str   -- how to resolve ambiguous turns ("minority" default)
     """
 
     def __init__(self, turdsize=2, alphamax=1.0, opttolerance=0.2,
@@ -1065,7 +1065,7 @@ class PurePythonTracer:
 
         Parameters
         ----------
-        binary_arr : uint8 (H×W) array; foreground pixels == 255
+        binary_arr : uint8 (HxW) array; foreground pixels == 255
         fill       : SVG fill color hex string
         size       : output scale factor
         debug      : if True, print JSON lines to stdout with per-path
@@ -1140,6 +1140,59 @@ class PurePythonTracer:
 
         # ── Stage 8: SVG serialisation ───────────────────────────────────────
         return get_svg(pathlist, w, h, size=size, fill=fill)
+
+    def trace_layers(
+        self,
+        layers: list,
+        size: float = 1.0,
+    ) -> str:
+        """Trace pre-segmented (color_hex, binary_mask) pairs into a layered SVG.
+
+        Designed for use with ``yd_vector.ml_preprocess.preprocess_pipeline()``.
+        Layers should be ordered bottom→top (largest area first).
+
+        Parameters
+        ----------
+        layers : list of (str, np.ndarray)
+            Each element is ``(color_hex, binary_mask_uint8)`` where the mask
+            is an HxW uint8 array (255 = foreground).
+        size   : float -- output scale factor (default 1.0)
+
+        Returns
+        -------
+        str : complete multi-layer SVG document
+        """
+        if not layers:
+            return '<svg xmlns="http://www.w3.org/2000/svg" width="0" height="0"></svg>'
+
+        info        = self.info
+        layer_parts = []
+        h = w = 0
+
+        for color_hex, mask in layers:
+            h, w = mask.shape[:2]
+            flat = (mask.flatten() > 127).astype(int).tolist()
+            bm   = Bitmap(w, h, flat)
+            pathlist = bm_to_pathlist(bm, info)
+            if not pathlist:
+                continue
+            for path in pathlist:
+                calc_sums(path)
+                calc_lon(path)
+                best_polygon(path)
+                adjust_vertices(path)
+                if path.sign == "-":
+                    reverse(path)
+                smooth(path, info["alphamax"])
+                if info["optcurve"]:
+                    opti_curve(path, info["opttolerance"])
+            layer_parts.append((color_hex, pathlist))
+
+        if not layer_parts:
+            return '<svg xmlns="http://www.w3.org/2000/svg" ' \
+                   f'width="{w}" height="{h}"></svg>'
+
+        return build_multicolor_svg(layer_parts, w, h, size=size)
 
     def trace_color_layers(self, img_bgr: np.ndarray, n_colors: int = 8,
                            size: float = 1.0) -> str:
@@ -1268,7 +1321,7 @@ def build_multicolor_svg(layer_parts, width, height, size=1.0):
 def main():
     ap = argparse.ArgumentParser(
         prog="tracer.py",
-        description="Pure-Python Potrace transpile — mathematically faithful SVG vectorizer.",
+        description="Pure-Python Potrace transpile -- mathematically faithful SVG vectorizer.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -1300,6 +1353,12 @@ Examples:
                     help="Number of colors for multi-color mode (e.g. 8). "
                          "When set, ignores --threshold/--invert/--fill and "
                          "runs k-means quantization + per-layer tracing.")
+    ap.add_argument("--preprocess",   action="store_true",
+                    help="Enable ML pre-processing pipeline: Real-ESRGAN x4 upscale "
+                         "then SAM 2.1 segmentation. Requires realesrgan, basicsr, "
+                         "segment-anything-2. Uses --colors as n_colors (default 8).")
+    ap.add_argument("--no-upscale",   action="store_true",
+                    help="Skip Real-ESRGAN upscaling when --preprocess is set.")
     ap.add_argument("--debug",        action="store_true",
                     help="Dump intermediate pipeline state (JSON lines) to stdout: "
                          "pathlist, polygon vertices, adjusted vertices, curve tags per segment.")
@@ -1323,14 +1382,33 @@ Examples:
         turnpolicy=args.turnpolicy,
     )
 
-    if args.colors > 0:
-        # ---- Multi-color mode ----
+    if args.preprocess:
+        # ---- ML preprocess mode (Real-ESRGAN + SAM 2.1) ----
+        from ml_preprocess import preprocess_pipeline
+        n_colors = args.colors if args.colors > 0 else 8
+        print(f"[tracer] ML preprocess mode: n_colors={n_colors}, "
+              f"upscale={not args.no_upscale}")
+        layers = preprocess_pipeline(
+            args.input,
+            do_upscale=not args.no_upscale,
+            n_colors=n_colors,
+        )
+        if not layers:
+            print("[tracer] WARNING: no layers produced by preprocess pipeline.",
+                  file=sys.stderr)
+            sys.exit(1)
+        h, w = layers[0][1].shape[:2]
+        print(f"[tracer] Tracing {len(layers)} layers ({w}x{h} px) ...")
+        svg = tracer.trace_layers(layers, size=args.size)
+
+    elif args.colors > 0:
+        # ---- Multi-color k-means mode ----
         img_bgr = cv2.imread(args.input, cv2.IMREAD_COLOR)
         if img_bgr is None:
             print(f"[tracer] ERROR: cannot read image.", file=sys.stderr)
             sys.exit(1)
         h, w = img_bgr.shape[:2]
-        print(f"[tracer] Multi-color mode: {w}×{h} px, {args.colors} colors "
+        print(f"[tracer] Multi-color mode: {w}x{h} px, {args.colors} colors "
               f"(alphamax={args.alphamax}, opttol={args.opttolerance}, "
               f"turdsize={args.turdsize})")
         svg = tracer.trace_color_layers(img_bgr, n_colors=args.colors, size=args.size)
@@ -1341,7 +1419,7 @@ Examples:
             print(f"[tracer] ERROR: cannot read image.", file=sys.stderr)
             sys.exit(1)
 
-        # Threshold — OTSU automatically finds the optimal split
+        # Threshold -- OTSU automatically finds the optimal split
         if args.otsu:
             thresh_val, binary = cv2.threshold(
                 gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
@@ -1353,18 +1431,18 @@ Examples:
         if args.invert:
             binary = cv2.bitwise_not(binary)
 
-        # Optional morphological close — bridges thin white gaps between shapes
+        # Optional morphological close -- bridges thin white gaps between shapes
         # (e.g. the white border between a pin body and its shadow ellipse)
         if args.close > 0:
             kernel = np.ones((args.close, args.close), np.uint8)
             binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-            print(f"[tracer] Morphological close: kernel={args.close}×{args.close}")
+            print(f"[tracer] Morphological close: kernel={args.close}x{args.close}")
 
-        print(f"[tracer] Binary mode: {gray.shape[1]}×{gray.shape[0]} px "
+        print(f"[tracer] Binary mode: {gray.shape[1]}x{gray.shape[0]} px "
               f"(alphamax={args.alphamax}, opttol={args.opttolerance}, "
               f"turdsize={args.turdsize}, optcurve={not args.no_optcurve})")
         if args.debug:
-            print(f"[tracer] Debug mode ON — printing JSON intermediate state to stdout")
+            print(f"[tracer] Debug mode ON -- printing JSON intermediate state to stdout")
         svg = tracer.trace(binary, fill=args.fill, size=args.size, debug=args.debug)
 
     # Optional background rect injection
@@ -1377,7 +1455,7 @@ Examples:
         os.makedirs(outdir, exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as f:
         f.write(svg)
-    print(f"[tracer] Written  {args.output}  ✓")
+    print(f"[tracer] Written  {args.output}  OK")
 
 
 if __name__ == "__main__":

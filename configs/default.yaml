@@ -20,8 +20,25 @@ pipeline:
   opttolerance: 0.2     # curve-merge tolerance in pixels
   optcurve: true        # enable optiCurve merging pass (Stage 7)
   turnpolicy: minority  # minority|majority|right|black|white
+  # yd_vector bezier-fitting parameters:
+  corner_threshold: 0.85       # dot-product cosine cutoff for corner detection
+                               # (1.0=no corners, 0.0=90° only, -1.0=every vertex)
+  simplify_epsilon: 1.5        # Douglas-Peucker tolerance before Bézier fitting (px)
+  bezier_min_points: 3         # minimum segment length to use a cubic Bezier (C cmd)
+                               # shorter segments fall back to straight lines (L cmd)
+  corner_arc_radius_sharp: 0.42  # arc radius for sharp corners (dot product < 0.5)
+  corner_arc_radius_soft: 0.92   # arc radius for soft corners  (dot product 0.5–0.85)
 
 output:
   fill: "#000000"       # foreground fill color
   bg: null              # background rect color (null = transparent SVG)
   scale: 1.0            # output scale factor
+
+preprocess:
+  preprocess_enabled: false  # enable ML pre-processing (Real-ESRGAN + SAM 2.1)
+  upscale_scale: 4           # Real-ESRGAN upscale factor (4 = x4plus model)
+  sam_model: sam2_hiera_large
+  sam_points_per_side: 64    # SAM2 grid density (higher = more masks, slower)
+  sam_iou_thresh: 0.90       # SAM2 predicted IoU threshold
+  color_merge_threshold: 12  # LAB distance below which masks are merged
+  n_colors: 8                # max colour layers to keep after merging
