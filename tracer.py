@@ -1085,6 +1085,125 @@ class PurePythonTracer:
 
         return get_svg(pathlist, w, h, size=size, fill=fill)
 
+    def trace_color_layers(self, img_bgr: np.ndarray, n_colors: int = 8,
+                           size: float = 1.0) -> str:
+        """
+        Multi-color vectorization pipeline (vectorizer.ai style):
+          1. K-means color quantize the image to n_colors palette entries.
+          2. For each palette color (darkest first = bottom SVG layer):
+             a. Build a binary mask: pixels belonging to this color cluster = 1.
+             b. Run the full Potrace pipeline on that mask.
+             c. Collect the resulting paths tagged with the cluster's hex color.
+          3. Assemble a layered SVG with all color layers stacked correctly.
+
+        Each layer uses fill-rule=evenodd so inner holes still punch through.
+        """
+        h, w = img_bgr.shape[:2]
+
+        # ---- Step 1: K-means color quantization ----
+        # Reshape to list of pixels, work in float32 for cv2.kmeans
+        pixels = img_bgr.reshape(-1, 3).astype(np.float32)
+
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
+        _, labels, centers = cv2.kmeans(
+            pixels, n_colors, None, criteria, 5, cv2.KMEANS_PP_CENTERS
+        )
+        centers = np.uint8(centers)            # palette: (n_colors, 3) BGR
+        labels  = labels.flatten()             # cluster index per pixel
+
+        # ---- Step 2: Sort palette from lightest to darkest ----
+        # Lightest = background (render first / bottom). Darkest = foreground (top).
+        brightness = centers.astype(float).mean(axis=1)  # mean BGR as proxy
+        order = np.argsort(brightness)[::-1]             # light → dark
+
+        info = self.info
+        layer_parts = []  # list of (hex_color, svg_d_string)
+
+        for cluster_idx in order:
+            color_bgr = centers[cluster_idx]             # (B, G, R)
+            hex_color = "#{:02x}{:02x}{:02x}".format(
+                int(color_bgr[2]), int(color_bgr[1]), int(color_bgr[0])
+            )
+
+            # Skip near-white background layer (optional: remove if you want bg rect)
+            lum = 0.299*color_bgr[2] + 0.587*color_bgr[1] + 0.114*color_bgr[0]
+            if lum > 245:
+                continue
+
+            # Build binary mask for this cluster (1 = this color)
+            mask = (labels == cluster_idx).reshape(h, w).astype(np.uint8) * 255
+
+            # Run Potrace on the mask
+            flat = (mask.flatten() > 127).astype(int).tolist()
+            bm   = Bitmap(w, h, flat)
+            pathlist = bm_to_pathlist(bm, info)
+
+            if not pathlist:
+                continue
+
+            for path in pathlist:
+                calc_sums(path)
+                calc_lon(path)
+                best_polygon(path)
+                adjust_vertices(path)
+                if path.sign == "-":
+                    reverse(path)
+                smooth(path, info["alphamax"])
+                if info["optcurve"]:
+                    opti_curve(path, info["opttolerance"])
+
+            layer_parts.append((hex_color, pathlist))
+
+        # ---- Step 3: Assemble multi-layer SVG ----
+        return build_multicolor_svg(layer_parts, w, h, size=size)
+
+
+# ---------------------------------------------------------------------------
+# Multi-color SVG builder
+# ---------------------------------------------------------------------------
+
+def _path_d_str(curve, size):
+    """Serialize one Curve object to an SVG path 'd' substring."""
+    def fmt(v):
+        return f"{v * size:.3f}"
+    n = curve.n
+    d = f"M{fmt(curve.c[(n-1)*3+2].x)} {fmt(curve.c[(n-1)*3+2].y)} "
+    for i in range(n):
+        if curve.tag[i] == "CURVE":
+            d += (f"C {fmt(curve.c[i*3+0].x)} {fmt(curve.c[i*3+0].y)},"
+                  f"{fmt(curve.c[i*3+1].x)} {fmt(curve.c[i*3+1].y)},"
+                  f"{fmt(curve.c[i*3+2].x)} {fmt(curve.c[i*3+2].y)} ")
+        elif curve.tag[i] == "CORNER":
+            d += (f"L {fmt(curve.c[i*3+1].x)} {fmt(curve.c[i*3+1].y)} "
+                  f"{fmt(curve.c[i*3+2].x)} {fmt(curve.c[i*3+2].y)} ")
+    return d
+
+
+def build_multicolor_svg(layer_parts, width, height, size=1.0):
+    """
+    Build a layered SVG with one <path> per color cluster.
+    Each path uses fill-rule=evenodd so holes punch through correctly.
+    Layers are ordered light→dark so the darkest shapes are on top.
+    """
+    w = int(width  * size)
+    h = int(height * size)
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8" standalone="no"?>',
+        f'<svg xmlns="http://www.w3.org/2000/svg" version="1.1"',
+        f'     width="{w}" height="{h}" viewBox="0 0 {w} {h}">',
+        f'  <!-- tracer.py multi-color mode: {len(layer_parts)} color layers -->',
+    ]
+    for hex_color, pathlist in layer_parts:
+        # Combine all subpath 'd' strings for this color into one <path>
+        d_parts = [_path_d_str(p.curve, size) for p in pathlist]
+        d = " ".join(d_parts)
+        lines.append(
+            f'  <path fill="{hex_color}" stroke="none" '
+            f'fill-rule="evenodd" d="{d}"/>'
+        )
+    lines.append('</svg>')
+    return "\n".join(lines)
+
 
 # ---------------------------------------------------------------------------
 # CLI entry point
@@ -1104,15 +1223,25 @@ Examples:
     )
     ap.add_argument("input",  help="Input raster image (PNG / JPEG / BMP ...)")
     ap.add_argument("output", help="Output SVG path")
-    ap.add_argument("--threshold",    type=int,   default=128,   help="Grayscale threshold 0-255 (default 128)")
+    ap.add_argument("--threshold",    type=int,   default=128,
+                    help="Grayscale binarization threshold 0-255 (default 128). Ignored if --otsu is set.")
+    ap.add_argument("--otsu",         action="store_true",
+                    help="Use OTSU automatic threshold instead of --threshold.")
+    ap.add_argument("--close",        type=int,   default=0,
+                    help="Morphological close kernel size in pixels before tracing (e.g. 3 or 5). "
+                         "Bridges thin white gaps/borders between touching shapes.")
     ap.add_argument("--turdsize",     type=int,   default=2,     help="Suppress speckles ≤ this area (default 2)")
     ap.add_argument("--alphamax",     type=float, default=1.0,   help="Corner threshold 0..2+ (default 1.0)")
     ap.add_argument("--opttolerance", type=float, default=0.2,   help="Curve-merge tolerance in px (default 0.2)")
     ap.add_argument("--no-optcurve",  action="store_true",       help="Disable optiCurve pass")
     ap.add_argument("--invert",       action="store_true",       help="Invert bitmap (trace dark shapes)")
     ap.add_argument("--turnpolicy",   default="minority",        help="Turn ambiguity policy (default minority)")
-    ap.add_argument("--fill",         default="#000000",         help='SVG fill colour (default "#000000")')
+    ap.add_argument("--fill",         default="#000000",         help='SVG fill colour for binary mode (default "#000000")')
     ap.add_argument("--size",         type=float, default=1.0,   help="Output scale factor (default 1.0)")
+    ap.add_argument("--colors",       type=int,   default=0,
+                    help="Number of colors for multi-color mode (e.g. 8). "
+                         "When set, ignores --threshold/--invert/--fill and "
+                         "runs k-means quantization + per-layer tracing.")
     args = ap.parse_args()
 
     if not os.path.isfile(args.input):
@@ -1120,18 +1249,6 @@ Examples:
         sys.exit(1)
 
     print(f"[tracer] Loading  {args.input}")
-    gray = cv2.imread(args.input, cv2.IMREAD_GRAYSCALE)
-    if gray is None:
-        print(f"[tracer] ERROR: cannot read image.", file=sys.stderr)
-        sys.exit(1)
-
-    _, binary = cv2.threshold(gray, args.threshold, 255, cv2.THRESH_BINARY)
-    if args.invert:
-        binary = cv2.bitwise_not(binary)
-
-    print(f"[tracer] Tracing  {gray.shape[1]}×{gray.shape[0]} px "
-          f"(alphamax={args.alphamax}, opttol={args.opttolerance}, "
-          f"turdsize={args.turdsize}, optcurve={not args.no_optcurve})")
 
     tracer = PurePythonTracer(
         turdsize=args.turdsize,
@@ -1140,7 +1257,48 @@ Examples:
         optcurve=not args.no_optcurve,
         turnpolicy=args.turnpolicy,
     )
-    svg = tracer.trace(binary, fill=args.fill, size=args.size)
+
+    if args.colors > 0:
+        # ---- Multi-color mode ----
+        img_bgr = cv2.imread(args.input, cv2.IMREAD_COLOR)
+        if img_bgr is None:
+            print(f"[tracer] ERROR: cannot read image.", file=sys.stderr)
+            sys.exit(1)
+        h, w = img_bgr.shape[:2]
+        print(f"[tracer] Multi-color mode: {w}×{h} px, {args.colors} colors "
+              f"(alphamax={args.alphamax}, opttol={args.opttolerance}, "
+              f"turdsize={args.turdsize})")
+        svg = tracer.trace_color_layers(img_bgr, n_colors=args.colors, size=args.size)
+    else:
+        # ---- Binary mode ----
+        gray = cv2.imread(args.input, cv2.IMREAD_GRAYSCALE)
+        if gray is None:
+            print(f"[tracer] ERROR: cannot read image.", file=sys.stderr)
+            sys.exit(1)
+
+        # Threshold — OTSU automatically finds the optimal split
+        if args.otsu:
+            thresh_val, binary = cv2.threshold(
+                gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+            )
+            print(f"[tracer] OTSU threshold: {thresh_val}")
+        else:
+            _, binary = cv2.threshold(gray, args.threshold, 255, cv2.THRESH_BINARY)
+
+        if args.invert:
+            binary = cv2.bitwise_not(binary)
+
+        # Optional morphological close — bridges thin white gaps between shapes
+        # (e.g. the white border between a pin body and its shadow ellipse)
+        if args.close > 0:
+            kernel = np.ones((args.close, args.close), np.uint8)
+            binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+            print(f"[tracer] Morphological close: kernel={args.close}×{args.close}")
+
+        print(f"[tracer] Binary mode: {gray.shape[1]}×{gray.shape[0]} px "
+              f"(alphamax={args.alphamax}, opttol={args.opttolerance}, "
+              f"turdsize={args.turdsize}, optcurve={not args.no_optcurve})")
+        svg = tracer.trace(binary, fill=args.fill, size=args.size)
 
     outdir = os.path.dirname(args.output)
     if outdir:
