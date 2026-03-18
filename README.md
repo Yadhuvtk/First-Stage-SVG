@@ -121,12 +121,22 @@ python tracer.py inputs/1.jpg outputs/1.svg --preprocess --colors 8
 python tracer.py inputs/1.jpg outputs/1.svg --preprocess --no-upscale  # skip ESRGAN
 ```
 
-### scripts/trace.py wrapper
+### scripts/trace.py — Dual Backend Super Tracer
 
-Same flags, same pipeline — convenience wrapper for scripting:
+The `scripts/trace.py` wrapper now boasts an intelligent dual backend, fusing `PurePythonTracer` (Bézier paths) with `vtracer` (pixel-to-vector racing) and OpenCV K-means color quantization!
 
 ```bash
-python scripts/trace.py inputs/1.jpg outputs/1.svg --otsu --invert --debug
+# Auto-detects grayscale (potrace) vs color (vtracer/color)
+python scripts/trace.py inputs/1.jpg outputs/1.svg --backend auto
+
+# Force full-color SVG generation with 12 layers using PurePythonTracer
+python scripts/trace.py inputs/1.jpg outputs/1.svg --backend color --colors 12
+
+# Force the fast vtracer engine
+python scripts/trace.py inputs/1.jpg outputs/1.svg --backend vtracer
+
+# Force traditional potrace with custom options
+python scripts/trace.py inputs/1.jpg outputs/1.svg --backend potrace --otsu --invert
 ```
 
 ### Debug mode
@@ -141,6 +151,7 @@ python tracer.py inputs/1.jpg outputs/1.svg --debug 2>nul
 
 | Flag | Default | Description |
 |---|---|---|
+| `--backend M` | `auto` | Tracing backend: `auto`, `potrace`, `vtracer`, `color` |
 | `--otsu` | off | OTSU automatic threshold (ignores `--threshold`) |
 | `--threshold N` | `128` | Manual grayscale threshold 0–255 |
 | `--invert` | off | Invert bitmap — trace dark on light |
@@ -150,7 +161,8 @@ python tracer.py inputs/1.jpg outputs/1.svg --debug 2>nul
 | `--opttolerance F` | `0.2` | Curve-merge tolerance in pixels |
 | `--no-optcurve` | off | Disable optiCurve merging pass (Stage 7) |
 | `--turnpolicy P` | `minority` | Ambiguous-turn policy: `minority\|majority\|right\|black\|white` |
-| `--colors N` | `0` (binary) | Multi-colour k-means mode — N colour layers |
+| `--colors N` | `0` (auto) | Number of colors for `--backend color` quantization (0 = auto) |
+| `--min-area N` | `100` | Minimum pixel area to keep a color layer (`--backend color`) |
 | `--fill COLOR` | `#000000` | SVG fill colour (binary mode) |
 | `--bg COLOR` | transparent | Background rect colour |
 | `--size F` / `--scale F` | `1.0` | Output scale factor |
@@ -314,6 +326,9 @@ First-Stage-SVG/
 ├── yd_vector/             # package — now delegates core tracing to tracer.py
 │   ├── tracer.py          # Catmull-Rom smooth path library (smooth_path)
 │   ├── bezier.py          # corner detection, cubic Bézier fitting, micro-arc SVG
+│   ├── compositor.py      # full color multi-layer SVG composer
+│   ├── layers.py          # splits quantized images into separate color masks
+│   ├── quantize.py        # K-means color quantization logic
 │   ├── svg_builder.py     # multi-contour SVG with winding + fill-rule=evenodd
 │   ├── pipeline.py        # run_trace(TraceOptions) → delegates to PurePythonTracer
 │   ├── fit.py             # DEPRECATED: straight-line fitting (kept for compat)
