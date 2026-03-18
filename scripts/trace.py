@@ -37,7 +37,20 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import cv2
 import numpy as np
-import potrace
+import vtracer
+
+from tracer import PurePythonTracer
+
+def detect_backend(image_path):
+    img = cv2.imread(image_path)
+    if img is None:
+        return "potrace"
+    b, g, r = cv2.split(img)
+    is_gray = (
+        cv2.mean(cv2.absdiff(r, g))[0] < 10 and
+        cv2.mean(cv2.absdiff(g, b))[0] < 10
+    )
+    return "potrace" if is_gray else "vtracer"
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -54,6 +67,8 @@ Examples:
 
     parser.add_argument("input",  help="Input raster image (PNG / JPEG / BMP)")
     parser.add_argument("output", help="Output SVG file path")
+    parser.add_argument("--backend", default="auto", choices=["auto", "potrace", "vtracer"],
+                        help="Tracing backend to use (default: auto)")
 
     # --- Preprocessing ---
     pre = parser.add_argument_group("Preprocessing")
@@ -105,83 +120,100 @@ def main() -> None:
         print(f"[trace] ERROR: input not found: {args.input}", file=sys.stderr)
         sys.exit(1)
 
-    # ── Load & preprocess ─────────────────────────────────────────────────────
-    print(f"[trace] Loading   {args.input}")
-    gray = cv2.imread(args.input, cv2.IMREAD_GRAYSCALE)
-    if gray is None:
-        print(f"[trace] ERROR: cannot read image.", file=sys.stderr)
-        sys.exit(1)
-
-    if args.otsu:
-        thresh_val, binary = cv2.threshold(
-            gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-        )
-        print(f"[trace] OTSU threshold: {thresh_val}")
+    if args.backend == "auto":
+        chosen_backend = detect_backend(args.input)
+        img_type = "grayscale" if chosen_backend == "potrace" else "color"
+        print(f"[trace] Auto-detected: {img_type} image → using {chosen_backend}")
     else:
-        _, binary = cv2.threshold(gray, args.threshold, 255, cv2.THRESH_BINARY)
+        chosen_backend = args.backend
 
-    if args.invert:
-        binary = cv2.bitwise_not(binary)
+    if chosen_backend == "potrace":
+        # ── Load & preprocess ─────────────────────────────────────────────────────
+        print(f"[trace] Loading   {args.input}")
+        gray = cv2.imread(args.input, cv2.IMREAD_GRAYSCALE)
+        if gray is None:
+            print(f"[trace] ERROR: cannot read image.", file=sys.stderr)
+            sys.exit(1)
 
-    if args.close > 0:
-        kernel = np.ones((args.close, args.close), np.uint8)
-        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-        print(f"[trace] Morphological close: {args.close}×{args.close}")
+        if args.otsu:
+            thresh_val, binary = cv2.threshold(
+                gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+            )
+            print(f"[trace] OTSU threshold: {thresh_val}")
+        else:
+            _, binary = cv2.threshold(gray, args.threshold, 255, cv2.THRESH_BINARY)
 
-    h, w = gray.shape[:2]
+        if args.invert:
+            binary = cv2.bitwise_not(binary)
 
-    # ── Build tracer ───────────────────────────────────────────────────────────
-    turn_policies = {
-        "minority": potrace.TURNPOLICY_MINORITY,
-        "majority": potrace.TURNPOLICY_MAJORITY,
-        "right": potrace.TURNPOLICY_RIGHT,
-        "black": potrace.TURNPOLICY_BLACK,
-        "white": potrace.TURNPOLICY_WHITE,
-    }
-    policy = turn_policies.get(args.turnpolicy, potrace.TURNPOLICY_MINORITY)
+        if args.close > 0:
+            kernel = np.ones((args.close, args.close), np.uint8)
+            binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+            print(f"[trace] Morphological close: {args.close}×{args.close}")
 
-    print(f"[trace] Tracing   {w}×{h} px  "
-          f"(alphamax={args.alphamax}, opttol={args.opttolerance}, "
-          f"turdsize={args.turdsize}, optcurve={not args.no_optcurve})")
+        h, w = gray.shape[:2]
 
-    bmp = potrace.Bitmap(binary.astype(bool))
-    path = bmp.trace(
-        turdsize=args.turdsize,
-        turnpolicy=policy,
-        alphamax=args.alphamax,
-        opticurve=not args.no_optcurve,
-        opttolerance=args.opttolerance,
-    )
-    
-    # Export SVG
-    svg_paths = []
-    s = args.scale
-    for curve in path:
-        parts = [f"M {curve.start_point.x * s:.3f} {curve.start_point.y * s:.3f}"]
-        for segment in curve:
-            if segment.is_corner:
-                parts.append(f"L {segment.c.x * s:.3f} {segment.c.y * s:.3f} L {segment.end_point.x * s:.3f} {segment.end_point.y * s:.3f}")
-            else:
-                parts.append(
-                    f"C {segment.c1.x * s:.3f} {segment.c1.y * s:.3f} "
-                    f"{segment.c2.x * s:.3f} {segment.c2.y * s:.3f} "
-                    f"{segment.end_point.x * s:.3f} {segment.end_point.y * s:.3f}"
-                )
-        parts.append("Z")
-        svg_paths.append(" ".join(parts))
+        # ── Build tracer ───────────────────────────────────────────────────────────
+        tracer = PurePythonTracer(
+            turdsize=args.turdsize,
+            alphamax=args.alphamax,
+            opttolerance=args.opttolerance,
+            optcurve=not args.no_optcurve,
+            turnpolicy=args.turnpolicy,
+        )
 
-    d_string = " ".join(svg_paths)
-    bg_rect = f'  <rect width="100%" height="100%" fill="{args.bg}"/>\n' if args.bg else ""
-    sw_w, sw_h = int(w * s), int(h * s)
-    svg = f'<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n<svg xmlns="http://www.w3.org/2000/svg" width="{sw_w}" height="{sw_h}" viewBox="0 0 {sw_w} {sw_h}">\n{bg_rect}  <path d="{d_string}" fill="{args.fill}" fill-rule="evenodd" stroke="none"/>\n</svg>\n'
+        print(f"[trace] Tracing   {w}×{h} px  "
+              f"(alphamax={args.alphamax}, opttol={args.opttolerance}, "
+              f"turdsize={args.turdsize}, optcurve={not args.no_optcurve})")
 
-    # ── Write output ───────────────────────────────────────────────────────────
-    outdir = os.path.dirname(args.output)
-    if outdir:
-        os.makedirs(outdir, exist_ok=True)
-    with open(args.output, "w", encoding="utf-8") as f:
-        f.write(svg)
-    print(f"[trace] Written   {args.output}  ✓")
+        if args.debug:
+            tracer.info["_debug"] = True   # signal to produce debug output
+
+        svg = tracer.trace(binary, fill=args.fill, size=args.scale)
+
+        # Optional background rect injection
+        if args.bg:
+            bg_rect = (
+                f'  <rect width="100%" height="100%" fill="{args.bg}"/>\n'
+            )
+            svg = svg.replace("  <!-- tracer.py", bg_rect + "  <!-- tracer.py")
+
+        # ── Write output ───────────────────────────────────────────────────────────
+        outdir = os.path.dirname(args.output)
+        if outdir:
+            os.makedirs(outdir, exist_ok=True)
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(svg)
+        print(f"[trace] Written   {args.output}  ✓")
+
+    elif chosen_backend == "vtracer":
+        print(f"[trace] Loading   {args.input} (vtracer)")
+        img = cv2.imread(args.input)
+        if img is None:
+            print(f"[trace] ERROR: cannot read image.", file=sys.stderr)
+            sys.exit(1)
+            
+        img_pixels = cv2.cvtColor(img, cv2.COLOR_BGR2RGBA)
+        
+        svg_str = vtracer.convert_pixels_to_svg(
+            img_pixels,
+            colormode="color",
+            hierarchical="stacked",
+            filter_speckle=args.turdsize,
+            color_precision=6,
+            layer_difference=16,
+            corner_threshold=int(args.alphamax * 60),
+            length_threshold=4.0,
+            max_iterations=10,
+            splice_threshold=45,
+            path_precision=3,
+        )
+        outdir = os.path.dirname(args.output)
+        if outdir:
+            os.makedirs(outdir, exist_ok=True)
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(svg_str)
+        print(f"[trace] Written   {args.output}  ✓")
 
 
 if __name__ == "__main__":
