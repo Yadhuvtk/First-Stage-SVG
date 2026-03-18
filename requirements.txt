@@ -2,6 +2,7 @@ numpy
 opencv-python
 Pillow
 PyYAML
+pypotrace
 
 # Optional: ML pre-processing pipeline (--preprocess flag)
 # Requires CUDA 12.x for GPU acceleration (RTX 5090 tested)

@@ -10,14 +10,7 @@ from yd_vector.models import TraceOptions, TraceResult
 from yd_vector.preprocess import preprocess_image
 from yd_vector.utils import ensure_parent_dir
 
-# PurePythonTracer lives in the project root (one level above this package).
-# Attempt a direct import; if that fails (e.g. running from inside the package),
-# insert the project root into sys.path first.
-try:
-    from tracer import PurePythonTracer
-except ImportError:
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from tracer import PurePythonTracer
+import potrace
 
 
 def run_trace(options: TraceOptions) -> TraceResult:
@@ -41,8 +34,32 @@ def run_trace(options: TraceOptions) -> TraceResult:
     )
     height, width = gray.shape[:2]
 
-    tracer = PurePythonTracer()
-    svg_str = tracer.trace(binary, fill=options.fill)
+    bmp = potrace.Bitmap(binary.astype(bool))
+    path = bmp.trace(
+        turdsize=2,
+        turnpolicy=potrace.TURNPOLICY_MINORITY,
+        alphamax=1.0,
+        opticurve=True,
+        opttolerance=0.2,
+    )
+
+    svg_paths = []
+    for curve in path:
+        parts = [f"M {curve.start_point.x:.3f} {curve.start_point.y:.3f}"]
+        for segment in curve:
+            if segment.is_corner:
+                parts.append(f"L {segment.c.x:.3f} {segment.c.y:.3f} L {segment.end_point.x:.3f} {segment.end_point.y:.3f}")
+            else:
+                parts.append(
+                    f"C {segment.c1.x:.3f} {segment.c1.y:.3f} "
+                    f"{segment.c2.x:.3f} {segment.c2.y:.3f} "
+                    f"{segment.end_point.x:.3f} {segment.end_point.y:.3f}"
+                )
+        parts.append("Z")
+        svg_paths.append(" ".join(parts))
+
+    d_string = " ".join(svg_paths)
+    svg_str = f'<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">\n  <path d="{d_string}" fill="{options.fill}" fill-rule="evenodd" stroke="none"/>\n</svg>\n'
 
     svg_path = ensure_parent_dir(options.output_path)
     svg_path.write_text(svg_str, encoding="utf-8")

@@ -37,9 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import cv2
 import numpy as np
-
-from tracer import PurePythonTracer
-
+import potrace
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -133,29 +131,49 @@ def main() -> None:
     h, w = gray.shape[:2]
 
     # ── Build tracer ───────────────────────────────────────────────────────────
-    tracer = PurePythonTracer(
-        turdsize=args.turdsize,
-        alphamax=args.alphamax,
-        opttolerance=args.opttolerance,
-        optcurve=not args.no_optcurve,
-        turnpolicy=args.turnpolicy,
-    )
+    turn_policies = {
+        "minority": potrace.TURNPOLICY_MINORITY,
+        "majority": potrace.TURNPOLICY_MAJORITY,
+        "right": potrace.TURNPOLICY_RIGHT,
+        "black": potrace.TURNPOLICY_BLACK,
+        "white": potrace.TURNPOLICY_WHITE,
+    }
+    policy = turn_policies.get(args.turnpolicy, potrace.TURNPOLICY_MINORITY)
 
     print(f"[trace] Tracing   {w}×{h} px  "
           f"(alphamax={args.alphamax}, opttol={args.opttolerance}, "
           f"turdsize={args.turdsize}, optcurve={not args.no_optcurve})")
 
-    if args.debug:
-        tracer.info["_debug"] = True   # signal to produce debug output
+    bmp = potrace.Bitmap(binary.astype(bool))
+    path = bmp.trace(
+        turdsize=args.turdsize,
+        turnpolicy=policy,
+        alphamax=args.alphamax,
+        opticurve=not args.no_optcurve,
+        opttolerance=args.opttolerance,
+    )
+    
+    # Export SVG
+    svg_paths = []
+    s = args.scale
+    for curve in path:
+        parts = [f"M {curve.start_point.x * s:.3f} {curve.start_point.y * s:.3f}"]
+        for segment in curve:
+            if segment.is_corner:
+                parts.append(f"L {segment.c.x * s:.3f} {segment.c.y * s:.3f} L {segment.end_point.x * s:.3f} {segment.end_point.y * s:.3f}")
+            else:
+                parts.append(
+                    f"C {segment.c1.x * s:.3f} {segment.c1.y * s:.3f} "
+                    f"{segment.c2.x * s:.3f} {segment.c2.y * s:.3f} "
+                    f"{segment.end_point.x * s:.3f} {segment.end_point.y * s:.3f}"
+                )
+        parts.append("Z")
+        svg_paths.append(" ".join(parts))
 
-    svg = tracer.trace(binary, fill=args.fill, size=args.scale)
-
-    # Optional background rect injection
-    if args.bg:
-        bg_rect = (
-            f'  <rect width="100%" height="100%" fill="{args.bg}"/>\n'
-        )
-        svg = svg.replace("  <!-- tracer.py", bg_rect + "  <!-- tracer.py")
+    d_string = " ".join(svg_paths)
+    bg_rect = f'  <rect width="100%" height="100%" fill="{args.bg}"/>\n' if args.bg else ""
+    sw_w, sw_h = int(w * s), int(h * s)
+    svg = f'<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n<svg xmlns="http://www.w3.org/2000/svg" width="{sw_w}" height="{sw_h}" viewBox="0 0 {sw_w} {sw_h}">\n{bg_rect}  <path d="{d_string}" fill="{args.fill}" fill-rule="evenodd" stroke="none"/>\n</svg>\n'
 
     # ── Write output ───────────────────────────────────────────────────────────
     outdir = os.path.dirname(args.output)
