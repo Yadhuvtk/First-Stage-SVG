@@ -50,7 +50,14 @@ def detect_backend(image_path):
         cv2.mean(cv2.absdiff(r, g))[0] < 10 and
         cv2.mean(cv2.absdiff(g, b))[0] < 10
     )
-    return "potrace" if is_gray else "vtracer"
+    if is_gray:
+        return "potrace"
+    
+    try:
+        import vtracer
+        return "vtracer"
+    except ImportError:
+        return "color"
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -67,8 +74,12 @@ Examples:
 
     parser.add_argument("input",  help="Input raster image (PNG / JPEG / BMP)")
     parser.add_argument("output", help="Output SVG file path")
-    parser.add_argument("--backend", default="auto", choices=["auto", "potrace", "vtracer"],
+    parser.add_argument("--backend", default="auto", choices=["auto", "potrace", "vtracer", "color"],
                         help="Tracing backend to use (default: auto)")
+    parser.add_argument("--colors",   type=int, default=0,
+                        help="Number of colors for quantization (default: 0 = auto-detect)")
+    parser.add_argument("--min-area", type=int, default=100,
+                        help="Minimum pixel area to keep a color layer (default: 100)")
 
     # --- Preprocessing ---
     pre = parser.add_argument_group("Preprocessing")
@@ -213,6 +224,39 @@ def main() -> None:
             os.makedirs(outdir, exist_ok=True)
         with open(args.output, "w", encoding="utf-8") as f:
             f.write(svg_str)
+        print(f"[trace] Written   {args.output}  ✓")
+
+    elif chosen_backend == "color":
+        from yd_vector.quantize import quantize_colors, auto_color_count
+        from yd_vector.layers import separate_layers
+        from yd_vector.compositor import build_color_svg
+
+        img = cv2.imread(args.input)
+        n = args.colors if args.colors > 0 else auto_color_count(img)
+        print(f"[trace] Color mode: quantizing to {n} colors")
+
+        quantized, palette = quantize_colors(img, n_colors=n)
+        layers = separate_layers(quantized, palette, min_area=args.min_area)
+        print(f"[trace] Separated into {len(layers)} layers")
+
+        h, w = img.shape[:2]
+        svg = build_color_svg(
+            layers=layers,
+            width=w,
+            height=h,
+            alphamax=args.alphamax,
+            opttolerance=args.opttolerance,
+            turdsize=args.turdsize,
+            opticurve=not args.no_optcurve,
+            scale=args.scale,
+            background=args.bg,
+        )
+
+        outdir = os.path.dirname(args.output)
+        if outdir:
+            os.makedirs(outdir, exist_ok=True)
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(svg)
         print(f"[trace] Written   {args.output}  ✓")
 
 
